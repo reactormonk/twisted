@@ -166,7 +166,7 @@ class CreateResolverTests(unittest.TestCase, GoodTempPathMixin):
         filename set to C{filename}.
         """
         res = [r for r in resolver.resolvers if isinstance(r, client.Resolver)]
-        self.assertEqual(1, len(res))
+        self.assertEqual(2, len(res))
         self.assertEqual(res[0].resolv, filename)
 
 
