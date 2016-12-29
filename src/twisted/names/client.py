@@ -64,7 +64,11 @@ class Resolver(common.ResolverBase):
     _lastResolvTime = None
     _resolvReadInterval = 60
 
-    def __init__(self, resolv=None, servers=None, timeout=(1, 3, 11, 45), reactor=None):
+    def __init__(self,
+                 resolv=None,
+                 servers=None,
+                 timeout=(1, 3, 11, 45),
+                 reactor=None):
         """
         Construct a resolver which will query domain name servers listed in
         the C{resolv.conf(5)}-format file given by C{resolv} as well as
@@ -169,14 +173,22 @@ class Resolver(common.ResolverBase):
             self._resolvReadInterval, self.maybeParseConfig)
 
 
+    def maybeAddNameserver(self, nameserver, servers):
+        """
+        Overridden in subclasses to select for ipv4/ipv6 nameservers.
+        """
+        resolver = (nativeString(parsedNamserver), dns.PORT)
+        servers.append(resolver)
+        log.msg("Resolver added %r to server list" % (resolver,))
+
+
     def parseConfig(self, resolvConf):
         servers = []
         for L in resolvConf:
             L = L.strip()
             if L.startswith(b'nameserver'):
-                resolver = (nativeString(L.split()[1]), dns.PORT)
-                servers.append(resolver)
-                log.msg("Resolver added %r to server list" % (resolver,))
+                parsedNamserver = L.split()[1]
+                self.maybeAddNameserver(parsedNamserver, servers)
             elif L.startswith(b'domain'):
                 try:
                     self.domain = L.split()[1]
@@ -189,7 +201,6 @@ class Resolver(common.ResolverBase):
         if not servers:
             servers.append(('127.0.0.1', dns.PORT))
         self.dynServers = servers
-
 
     def pickServer(self):
         """
@@ -288,6 +299,7 @@ class Resolver(common.ResolverBase):
             timeout = self.timeout
 
         addresses = self.servers + list(self.dynServers)
+        print(addresses)
         if not addresses:
             return defer.fail(IOError("No domain name servers available"))
 
@@ -439,6 +451,43 @@ class Resolver(common.ResolverBase):
 
 
 
+class IPv6Resolver(Resolver):
+    """
+    Selects only IPv6 resolv.conf entries.
+    """
+    def maybeAddNameserver(self, nameserver, servers):
+        resolver = (nativeString(nameserver), dns.PORT)
+        if b':' in nameserver:
+            servers.append(resolver)
+            log.msg("IPv6Resolver added %r to server list" % (resolver,))
+
+
+    def _connectedProtocol(self):
+        """
+        Return a new L{DNSDatagramProtocol} bound to a randomly selected port
+        number.
+        """
+        proto = dns.DNSDatagramProtocol(self, reactor=self._reactor)
+        while True:
+            try:
+                self._reactor.listenUDP(dns.randomSource(), proto,
+                                        interface = '::')
+            except error.CannotListenError:
+                pass
+            else:
+                return proto
+
+class IPv4Resolver(Resolver):
+    """
+    Selects only IPv4 resolv.conf entries.
+    """
+    def maybeAddNameserver(self, nameserver, servers):
+        resolver = (nativeString(nameserver), dns.PORT)
+        if b'.' in nameserver:
+            servers.append(resolver)
+            log.msg("IPv4Resolver added %r to server list" % (resolver,))
+
+
 class AXFRController:
     timeoutCall = None
 
@@ -571,7 +620,10 @@ def createResolver(servers=None, resolvconf=None, hosts=None):
             resolvconf = b'/etc/resolv.conf'
         if hosts is None:
             hosts = b'/etc/hosts'
-        theResolver = Resolver(resolvconf, servers)
+        resolvers = [
+            IPv6Resolver(resolvconf, servers),
+            IPv4Resolver(resolvconf, servers)
+        ]
         hostResolver = hostsModule.Resolver(hosts)
     else:
         if hosts is None:
@@ -579,9 +631,9 @@ def createResolver(servers=None, resolvconf=None, hosts=None):
         from twisted.internet import reactor
         bootstrap = _ThreadedResolverImpl(reactor)
         hostResolver = hostsModule.Resolver(hosts)
-        theResolver = root.bootstrap(bootstrap, resolverFactory=Resolver)
+        resolvers = [root.bootstrap(bootstrap, resolverFactory=Resolver)]
 
-    L = [hostResolver, cache.CacheResolver(), theResolver]
+    L = [hostResolver, cache.CacheResolver()] + resolvers
     return resolve.ResolverChain(L)
 
 
